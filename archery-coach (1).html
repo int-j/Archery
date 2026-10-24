@@ -1,0 +1,900 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Archery AI Coach</title>
+<style>
+  :root{--bg:#0f1419;--panel:#171e26;--line:#2a3441;--txt:#e6edf3;--mut:#8b98a8;--acc:#38bdf8;--good:#34d399;--warn:#fbbf24;--bad:#f87171}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
+  header{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  h1{margin:0;font-size:20px}
+  #status{font-size:13px;color:var(--mut)}
+  .wrap{padding:16px 20px}
+  .grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,2fr);gap:16px;align-items:start}
+  @media(max-width:1000px){.grid{grid-template-columns:1fr}}
+  @media(min-width:1001px){.sticky{position:sticky;top:10px;max-height:calc(100vh - 20px);overflow:auto}}
+  .col{display:flex;flex-direction:column;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
+  .controls label{font-size:13px;color:var(--mut);display:flex;gap:6px;align-items:center}
+  select,button.b,input[type=number]{background:#0f1419;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:14px}
+  button.b{cursor:pointer}
+  button.b:hover{border-color:var(--acc)}
+  button.p{background:var(--acc);color:#04202e;border-color:var(--acc);font-weight:600}
+  button.b:disabled{opacity:.4;cursor:default}
+  canvas{width:100%;height:auto;background:#000;border-radius:10px;display:block}
+  #tc{cursor:crosshair}
+  #tl{cursor:pointer;margin-top:10px}
+  progress{width:100%;height:6px;margin-top:8px}
+  .trow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+  .tleft{flex:0 0 240px;max-width:240px}
+  .tleft.big{flex:0 0 100%;max-width:560px}
+  .tright{flex:1;min-width:230px}
+  .item{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+  .item:last-child{border:none}
+  .ic{font-weight:700;width:18px;flex:none}
+  .good .ic{color:var(--good)}.warn .ic{color:var(--warn)}.bad .ic{color:var(--bad)}.info .ic{color:var(--mut)}
+  .item small{display:block;color:var(--mut)}
+  .score{font-size:34px;font-weight:700}
+  .mut{color:var(--mut);font-size:13px}
+  .not{font-style:italic;margin:6px 0 0}
+  .sec{margin-top:16px;padding-top:10px;border-top:1px solid var(--line)}
+  .lead{font-size:16px;line-height:1.55;margin:6px 0 10px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .chip{background:#0f1419;border:1px solid var(--line);border-radius:999px;padding:3px 12px;font-size:13px}
+  .link{color:var(--acc);font-size:13px;margin:4px 0 0}
+  h3{margin:0 0 6px}
+  .hint{background:#0b2530;border:1px solid #14485f;border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏹 Archery AI Coach</h1>
+  <span id="status">Loading pose model…</span>
+</header>
+
+<div class="wrap">
+<div class="grid">
+  <div class="col">
+
+    <!-- ========== POSTURE (large) ========== -->
+    <div class="card">
+      <div class="controls">
+        <input type="file" id="file" accept="image/*,video/*">
+        <label>Bow hand
+          <select id="bow"><option value="left">Left (right-handed archer)</option><option value="right">Right (left-handed archer)</option></select>
+        </label>
+        <label>Camera view
+          <select id="view"><option value="side">Side (90° to shooting line)</option><option value="front">Front / back</option></select>
+        </label>
+        <label><input type="checkbox" id="closeup"> Close-up of draw hand (check hook)</label>
+      </div>
+      <div class="controls">
+        <button class="b p" id="scan" disabled>Analyze whole video</button>
+        <button class="b" id="play" disabled>Play with live overlay</button>
+        <button class="b" id="dl" disabled>Download annotated frame</button>
+      </div>
+      <canvas id="c" width="960" height="540"></canvas>
+      <video id="v" playsinline muted style="display:none"></video>
+      <progress id="prog" value="0" max="1" style="display:none"></progress>
+      <canvas id="tl" width="960" height="170" style="display:none"></canvas>
+      <p class="mut" id="tlnote" style="display:none">Timeline: blue line = how far the draw hand is from the bow hand (100% = full draw). Green = full-draw hold, red line = release. Click it to jump to that moment.</p>
+      <p class="mut">Tips: for the whole-body checks film at full draw with the whole body in frame, camera at chest height and exactly side-on (arrow line horizontal) or square front/back. For the hook, use a separate close-up that includes the draw hand and forearm (ideally the elbow) and tick the box above. For the shot timeline, film several shots in one video.</p>
+      <input type="range" id="seek" min="0" max="1000" value="0" style="width:100%;display:none">
+    </div>
+
+    <!-- ========== TARGET (small) ========== -->
+    <div class="card">
+      <h3>Target results</h3>
+      <div class="trow">
+        <div class="tleft" id="tleft"><canvas id="tc" width="800" height="800"></canvas></div>
+        <div class="tright">
+          <div class="controls"><input type="file" id="tfile" accept="image/*"></div>
+          <div class="controls">
+            <label>Distance <input type="number" id="dist" value="70" min="1" max="100" style="width:68px"> m</label>
+            <label>Target face <input type="number" id="face" value="122" min="10" max="200" style="width:68px"> cm</label>
+            <label>Rings <input type="number" id="rings" value="10" min="3" max="12" style="width:60px"></label>
+          </div>
+          <div class="controls">
+            <button class="b" id="undo">Undo last</button>
+            <button class="b" id="reset">Reset</button>
+            <button class="b" id="tzoom">Enlarge</button>
+            <button class="b" id="tdl">Download</button>
+          </div>
+          <div class="hint" id="thint">Upload a photo of the target (taken as straight-on as possible).</div>
+          <div id="treport"><p class="mut">Calibrate the target, then click each arrow hole.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== COACH REPORT ========== -->
+  <div class="card sticky">
+    <div id="report"><p class="mut">Add an archer photo/video and a target photo to get a combined analysis of your form and your results.</p></div>
+  </div>
+</div>
+</div>
+
+<script type="module">
+import {PoseLandmarker, HandLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
+
+const $ = id => document.getElementById(id);
+const COL = {good:'#34d399', warn:'#fbbf24', bad:'#f87171', info:'#8b98a8'};
+const ICON = {good:'✔', warn:'!', bad:'✖', info:'i'};
+
+/* ---------------- models ---------------- */
+let landmarker = null, handLm = null;
+async function initModel(){
+  try{
+    const fileset = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    const base = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task";
+    try{
+      landmarker = await PoseLandmarker.createFromOptions(fileset,{baseOptions:{modelAssetPath:base,delegate:"GPU"},runningMode:"IMAGE",numPoses:1});
+    }catch(e){
+      landmarker = await PoseLandmarker.createFromOptions(fileset,{baseOptions:{modelAssetPath:base,delegate:"CPU"},runningMode:"IMAGE",numPoses:1});
+    }
+    try{
+      handLm = await HandLandmarker.createFromOptions(fileset,{
+        baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task",delegate:"CPU"},
+        runningMode:"IMAGE", numHands:2});
+    }catch(e){ handLm = null; }
+    $('status').textContent = "Pose model ready ✔" + (handLm ? " · hand model ready ✔" : " · hand model unavailable (hook check off)");
+  }catch(e){
+    $('status').textContent = "Could not load models (internet needed): " + e.message;
+  }
+}
+initModel();
+
+/* ---------------- geometry helpers ---------------- */
+const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+const mid = (a,b) => ({x:(a.x+b.x)/2, y:(a.y+b.y)/2});
+const deg = r => r*180/Math.PI;
+function angleAt(a,b,c){
+  const v1={x:a.x-b.x,y:a.y-b.y}, v2={x:c.x-b.x,y:c.y-b.y};
+  const d=v1.x*v2.x+v1.y*v2.y, m=Math.hypot(v1.x,v1.y)*Math.hypot(v2.x,v2.y);
+  return deg(Math.acos(Math.max(-1,Math.min(1,d/(m||1)))));
+}
+const median = a => {const s=[...a].sort((x,y)=>x-y);const n=s.length;return n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2;};
+const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
+const std = a => {const m=mean(a);return Math.sqrt(a.reduce((x,y)=>x+(y-m)**2,0)/a.length);};
+const clean = a => a.filter(x => x!=null && !isNaN(x));
+const medOrNull = a => { a=clean(a); return a.length ? median(a) : null; };
+const list = a => a.length<=1 ? a.join('') : a.slice(0,-1).join(', ')+' and '+a[a.length-1];
+
+/* ---------------- metric definitions (thresholds are PROVISIONAL) ---------------- */
+const DEFS = {
+  balance:{label:'Weight balance between the feet',unit:' of stance',good:[0,0.15],warn:[0,0.3],dec:2,
+    high:'Your hips sit off-centre between the feet, so weight looks shifted to one side. Aim for an even, balanced base.'},
+  torsoLean:{label:'Torso lean',unit:'°',good:[0,7],warn:[0,14],dec:1,
+    high:'Too much torso lean. Stand tall with a neutral spine; avoid leaning back to cope with draw weight.'},
+  headOver:{label:'Head over shoulders',unit:' torso',good:[0,0.15],warn:[0,0.3],dec:2,
+    high:'Head is well in front of / behind the shoulders. Keep the head upright and bring the string to your face, not your face to the string.'},
+  stance:{label:'Stance width / shoulder width',unit:'×',good:[0.9,1.5],warn:[0.7,1.9],dec:2,
+    low:'Stance is narrow. Aim for roughly shoulder width for stability.',
+    high:'Stance is very wide. Narrow it slightly for better balance and a repeatable base.'},
+  shoulderTilt:{label:'Shoulder line tilt',unit:'°',good:[0,3],warn:[0,6],dec:1,
+    high:'Shoulders are not level. Keep the shoulder line level; don\'t lift the draw shoulder or dip the bow shoulder.'},
+  hipTilt:{label:'Hip line tilt',unit:'°',good:[0,3],warn:[0,6],dec:1,
+    high:'Hips are tilted. Distribute weight evenly over both feet.'},
+  headTilt:{label:'Head tilt (ear line)',unit:'°',good:[0,4],warn:[0,8],dec:1,
+    high:'Head is tilted. Keep the head level and rotate (don\'t tilt) toward the target.'},
+  wristStraight:{label:'Draw wrist straightness',unit:'°',good:[160,181],warn:[145,181],dec:0,
+    low:'Draw wrist is bent. Keep the wrist straight in line with the forearm and let the hand relax.'},
+  fingerCurl:{label:'Finger curl (middle joints, average)',unit:'°',info:true,dec:0},
+  hookVar:{label:'Hook steadiness during the hold',unit:'° variation',good:[0,5],warn:[0,10],dec:1,
+    high:'The wrist/hook shape changes during the hold. Check the hook stays the same all the way through expansion.'},
+  releasePath:{label:'Draw-hand path after release',unit:'° off the arrow line',good:[0,25],warn:[0,45],dec:0,
+    high:'The draw hand does not travel straight back along the arrow line after release. Work on release direction and keep expansion going through the release.'},
+  bowFollow:{label:'Bow arm after release (drop in first 0.5 s)',unit:'% of torso',good:[-100,15],warn:[-100,30],dec:0,
+    high:'The bow arm drops quickly after release. Keep the bow arm up and steady until the arrow hits the target (follow-through).'},
+  drawLenCV:{label:'Full-draw length consistency (shot to shot)',unit:'% variation',good:[0,3],warn:[0,6],dec:1,
+    high:'Your full-draw position varies between shots, which also changes when the clicker goes off. Aim for the same draw length every shot.'},
+  bowElbow:{label:'Bow arm extension',unit:'°',good:[160,200],warn:[145,200],dec:0,
+    low:'Bow arm is bent or collapsing. Extend it toward the target and keep the bow shoulder low and set.'},
+  arrowTilt:{label:'Arrow line (bow hand → draw hand)',unit:'°',good:[-5,5],warn:[-10,10],dec:1,
+    low:'Arrow line slopes up toward the string (draw hand above bow hand). Check for a high anchor or a dropped bow arm.',
+    high:'Arrow line slopes down toward the string. Often a low anchor or a raised bow arm: check anchor point and bow shoulder.'},
+  elbowOff:{label:'Draw elbow vs arrow line',unit:' torso',good:[-0.08,0.08],warn:[-0.16,0.16],dec:2,
+    low:'Draw elbow sits ABOVE the arrow line. Drop it slightly so the forearm, elbow and arrow line up.',
+    high:'Draw elbow sits BELOW the arrow line. Raise it so you can align and use your back muscles through the shot.'},
+  elbowRise:{label:'Draw elbow height vs shoulder',unit:' torso',good:[-0.1,0.15],warn:[-0.2,0.3],dec:2,
+    low:'Draw elbow is below shoulder level. Raise it to work from the back.',
+    high:'Draw elbow is much higher than the shoulder line. Lower it slightly.'},
+  anchor:{label:'Anchor (draw hand to face)',unit:' torso',good:[0,0.25],warn:[0,0.4],dec:2,
+    high:'Draw hand is far from the face. Find one fixed anchor point (e.g. under the jaw) and hit it every shot.'},
+  holdStill:{label:'Bow-hand steadiness (last second)',unit:'% of torso',good:[0,2],warn:[0,4],dec:1,
+    high:'The bow hand is moving in the final second before release. Hold still and let the shot finish through back expansion.'},
+  elbowStill:{label:'Draw-elbow steadiness (last second)',unit:'% of torso',good:[0,2],warn:[0,4],dec:1,
+    high:'The draw elbow is moving around at the end. Keep one steady line of expansion and avoid jerky or changing direction.'},
+  expMove:{label:'Draw-hand travel in the last second',unit:'% of torso per s',good:[-1.5,100],warn:[-4,100],dec:1,
+    low:'The draw hand is creeping forward before release (draw length collapsing). Keep expanding through the shot.'}
+};
+const VIEWS = {
+  side:['arrowTilt','elbowOff','torsoLean','headOver','anchor','balance'],
+  front:['shoulderTilt','hipTilt','stance','headTilt','elbowRise']
+};
+for (const v in VIEWS) VIEWS[v].forEach(k => { DEFS[k].views = [v]; });
+const POSE_KEYS = ['bowElbow',...VIEWS.side,...VIEWS.front];
+
+// breakdown by body area (Coach Kim's key in brackets where one applies)
+const AREAS = [
+  {t:'Stance & balance', kim:'Kim key 1: body angle', keys:['balance','stance','hipTilt'],
+   not:'Stance angle relative to the target line and the 50-50 push/pull balance he describes need a top-down view or a coach.'},
+  {t:'Shoulders & torso', kim:'Kim key 1: body angle', keys:['shoulderTilt','torsoLean'],
+   not:'Shoulder alignment to the shooting line is only partly visible in a 2D view.'},
+  {t:'Bow arm', kim:'Kim key 5: expansion', keys:['bowElbow','holdStill'],
+   not:'Grip pressure and bow-hand torque are not visible.'},
+  {t:'Draw arm & elbow', kim:'Kim key 5: expansion', keys:['elbowOff','elbowRise','arrowTilt','elbowStill'],
+   not:'Whether the large back muscles (rather than the arm) drive the draw cannot be seen.'},
+  {t:'Hook & draw hand', kim:'Kim key 2: hook', keys:['wristStraight','fingerCurl','hookVar'],
+   need:'Tick "Close-up of draw hand" and use a close-up that shows the draw hand and forearm.',
+   not:'Hook depth on the string, hand tension and tab fit.'},
+  {t:'Anchor & head', kim:'', keys:['anchor','headOver','headTilt'],
+   not:'The exact contact points on the face.'},
+  {t:'Expansion & hold', kim:'Kim key 5: expansion', keys:['expMove'],
+   need:'Needs a video with a full-draw hold. Use "Analyze whole video".',
+   not:'The balance of push and pull forces.'},
+  {t:'Release & follow-through', kim:'Kim key 3: release', keys:['releasePath','bowFollow'],
+   need:'Needs a video with at least one release and the full body in view. Use "Analyze whole video".',
+   not:'The feel and finger movement of the release, and what the bow does in your hand after the shot.'},
+  {t:'Draw length & clicker', kim:'Kim key 4: clicker', keys:['drawLenCV'],
+   need:'Needs a video with two or more shots. Use "Analyze whole video".',
+   not:'The clicker itself is not visible.'}
+];
+
+const inR = (v,r) => v>=r[0] && v<=r[1];
+const statusOf = (k,v) => DEFS[k].info ? 'info' : inR(v,DEFS[k].good) ? 'good' : inR(v,DEFS[k].warn) ? 'warn' : 'bad';
+
+function evaluate(vals){
+  const view = $('view').value, out = {};
+  for (const k in vals){
+    const d = DEFS[k], v = vals[k];
+    if(!d || v==null || isNaN(v)) continue;
+    if(d.views && !d.views.includes(view)) continue;
+    out[k] = {v, s:statusOf(k,v)};
+  }
+  return out;
+}
+
+/* ---------------- per-frame metrics from pose ---------------- */
+function arms(){
+  const left = $('bow').value === 'left';
+  const L = {s:11,e:13,w:15}, R = {s:12,e:14,w:16};
+  return left ? {bow:L, drw:R} : {bow:R, drw:L};
+}
+function compute(L,W,H){
+  const P = i => ({x:L[i].x*W, y:L[i].y*H});
+  const {bow,drw} = arms();
+  const sh = mid(P(11),P(12)), hip = mid(P(23),P(24));
+  const torso = dist(sh,hip) || 1;
+  const A = P(bow.w), B = P(drw.w), E = P(drw.e);
+  const v = {};
+  v.bowElbow = angleAt(P(bow.s),P(bow.e),P(bow.w));
+  v.arrowTilt = deg(Math.atan2(B.y-A.y, Math.abs(B.x-A.x) || 1));
+  const yLine = Math.abs(B.x-A.x) > 1 ? A.y + (B.y-A.y)*(E.x-A.x)/(B.x-A.x) : A.y;
+  v.elbowOff = (E.y - yLine)/torso;
+  v.torsoLean = Math.abs(deg(Math.atan2(sh.x-hip.x, hip.y-sh.y)));
+  const ear = mid(P(7),P(8));
+  v.headOver = Math.abs(ear.x - sh.x)/torso;
+  v.anchor = dist(B,P(0))/torso;
+  const am = mid(P(27),P(28)), sw = Math.abs(P(27).x-P(28).x);
+  v.balance = sw > 5 ? Math.min(2, Math.abs(hip.x-am.x)/sw) : NaN;
+  v.shoulderTilt = Math.abs(deg(Math.atan2(P(12).y-P(11).y, P(12).x-P(11).x)));
+  if (v.shoulderTilt>90) v.shoulderTilt = 180-v.shoulderTilt;
+  v.hipTilt = Math.abs(deg(Math.atan2(P(24).y-P(23).y, P(24).x-P(23).x)));
+  if (v.hipTilt>90) v.hipTilt = 180-v.hipTilt;
+  v.stance = dist(P(27),P(28))/(dist(P(11),P(12))||1);
+  v.headTilt = Math.abs(deg(Math.atan2(P(8).y-P(7).y, P(8).x-P(7).x)));
+  if (v.headTilt>90) v.headTilt = 180-v.headTilt;
+  v.elbowRise = (sh.y - E.y)/torso;
+  v._drawDist = dist(A,B)/torso;
+  v._bwx = A.x/torso; v._bwy = A.y/torso;
+  v._dex = E.x/torso; v._dey = E.y/torso;
+  v._dwx = B.x/torso; v._dwy = B.y/torso;
+  return v;
+}
+
+/* ---------------- hand / hook ---------------- */
+const HBONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
+function getHand(L){
+  if(!$('closeup').checked || !handLm) return null;
+  let r; try{ r = handLm.detect(source()); }catch(e){ return null; }
+  if(!r.landmarks || !r.landmarks.length) return null;
+  const W=cv.width, H=cv.height;
+  let best=null;
+  if(L){
+    const dw = L[arms().drw.w]; let bd=1e9;
+    r.landmarks.forEach(h => { const d=Math.hypot(h[0].x-dw.x,h[0].y-dw.y); if(d<bd){bd=d;best=h;} });
+    if(bd>0.2) best=null;
+  } else best = r.landmarks[0];
+  if(!best) return null;
+  const P = l => ({x:l.x*W, y:l.y*H});
+  const vals = {};
+  if(L) vals.wristStraight = angleAt(P(L[arms().drw.e]), P(best[0]), P(best[9]));
+  const curls = [[5,6,7],[9,10,11],[13,14,15]].map(([a,b,c]) => angleAt(P(best[a]),P(best[b]),P(best[c])));
+  vals.fingerCurl = mean(curls);
+  return {L:best, vals};
+}
+function drawHand(HL, ev, L){
+  const W=cv.width, H=cv.height, lw=Math.max(2,W/320), r=Math.max(3,W/230), fs=Math.max(12,W/60);
+  const P = l => ({x:l.x*W, y:l.y*H});
+  ctx.lineCap='round'; ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=lw;
+  HBONES.forEach(([a,b]) => { ctx.beginPath(); ctx.moveTo(P(HL[a]).x,P(HL[a]).y); ctx.lineTo(P(HL[b]).x,P(HL[b]).y); ctx.stroke(); });
+  HL.forEach(l => { ctx.beginPath(); ctx.arc(P(l).x,P(l).y,r,0,7); ctx.fillStyle='#38bdf8'; ctx.fill(); });
+  if(L && ev.wristStraight){
+    const e=P(L[arms().drw.e]), w=P(HL[0]), m=P(HL[9]), c=COL[ev.wristStraight.s];
+    ctx.strokeStyle=c; ctx.lineWidth=lw*1.8; ctx.setLineDash([8,5]);
+    ctx.beginPath(); ctx.moveTo(e.x,e.y); ctx.lineTo(w.x,w.y); ctx.lineTo(m.x,m.y); ctx.stroke(); ctx.setLineDash([]);
+    const t = 'wrist '+ev.wristStraight.v.toFixed(0)+'°';
+    ctx.font=`600 ${fs}px system-ui,sans-serif`; const tw=ctx.measureText(t).width;
+    ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(w.x+r*2-4,w.y-fs-r*2,tw+8,fs+8);
+    ctx.fillStyle=c; ctx.fillText(t,w.x+r*2,w.y-r*2);
+  }
+}
+
+/* ---------------- drawing overlay (body) ---------------- */
+const cv = $('c'), ctx = cv.getContext('2d');
+const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+
+function drawOverlay(L, ev){
+  const W=cv.width, H=cv.height, lw=Math.max(2,W/320), r=Math.max(4,W/170), fs=Math.max(12,W/60);
+  const P = i => ({x:L[i].x*W, y:L[i].y*H});
+  const side = $('view').value==='side';
+  const st = k => ev[k] ? COL[ev[k].s] : '#e6edf3';
+  const {bow,drw} = arms();
+
+  ctx.lineCap='round'; ctx.lineWidth=lw; ctx.strokeStyle='rgba(255,255,255,.55)';
+  for (const [a,b] of BONES){ ctx.beginPath(); ctx.moveTo(P(a).x,P(a).y); ctx.lineTo(P(b).x,P(b).y); ctx.stroke(); }
+
+  const dot = (p,c,rr=r) => {ctx.beginPath();ctx.arc(p.x,p.y,rr,0,7);ctx.fillStyle=c;ctx.fill();ctx.lineWidth=2;ctx.strokeStyle='#000';ctx.stroke();};
+  const text = (t,p,c) => {
+    ctx.font = `600 ${fs}px system-ui,sans-serif`; const w=ctx.measureText(t).width;
+    ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(p.x-4,p.y-fs,w+8,fs+8);
+    ctx.fillStyle=c; ctx.fillText(t,p.x,p.y);
+  };
+  const seg = (a,b,c,dash=[],w=lw*1.4) => {ctx.beginPath();ctx.setLineDash(dash);ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.strokeStyle=c;ctx.lineWidth=w;ctx.stroke();ctx.setLineDash([]);};
+
+  const sh=mid(P(11),P(12)), hip=mid(P(23),P(24));
+  const torso=dist(sh,hip);
+
+  seg({x:hip.x,y:hip.y-torso*1.6},{x:hip.x,y:hip.y+torso*1.6},'rgba(250,204,21,.7)',[8,8],lw);
+
+  if (side){
+    const A=P(bow.w), B=P(drw.w), E=P(drw.e);
+    const dx=B.x-A.x, dy=B.y-A.y;
+    seg({x:A.x-dx*.35,y:A.y-dy*.35},{x:B.x+dx*.25,y:B.y+dy*.25}, st('arrowTilt'), [10,6]);
+    if (Math.abs(dx)>1){
+      const yL = A.y + dy*(E.x-A.x)/dx;
+      seg({x:E.x,y:yL},E, st('elbowOff'), [], lw*1.6);
+      dot({x:E.x,y:yL}, '#38bdf8', r*.6);
+    }
+    const S=P(bow.s), Eb=P(bow.e);
+    const a1=Math.atan2(S.y-Eb.y,S.x-Eb.x), a2=Math.atan2(A.y-Eb.y,A.x-Eb.x);
+    let d=a2-a1; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI;
+    ctx.beginPath(); ctx.arc(Eb.x,Eb.y,r*3.2,a1,a1+d,d<0); ctx.strokeStyle=st('bowElbow'); ctx.lineWidth=lw*1.5; ctx.stroke();
+    seg(P(0),B, st('anchor'), [4,5], lw);
+    const am = mid(P(27),P(28));
+    seg(P(27),P(28), st('balance'), [6,6], lw*1.4);
+    dot({x:hip.x,y:am.y}, st('balance'), r*.8); dot(am,'#fff',r*.6);
+    dot(P(bow.s), '#fff'); dot(Eb, st('bowElbow')); dot(A,'#38bdf8'); dot(P(drw.s),'#fff');
+    dot(E, st('elbowOff')); dot(B,'#38bdf8');
+    dot(P(0), st('anchor')); dot(mid(P(7),P(8)), st('headOver'));
+    dot(sh, st('torsoLean')); dot(hip, st('torsoLean'));
+    seg(hip,sh, st('torsoLean'), [], lw*1.6);
+    if (ev.bowElbow) text(ev.bowElbow.v.toFixed(0)+'°', {x:Eb.x+r*4,y:Eb.y-r*2}, st('bowElbow'));
+    if (ev.arrowTilt) text(ev.arrowTilt.v.toFixed(1)+'°', {x:(A.x+B.x)/2,y:Math.min(A.y,B.y)-fs}, st('arrowTilt'));
+    if (ev.torsoLean) text('lean '+ev.torsoLean.v.toFixed(0)+'°', {x:sh.x+r*3,y:(sh.y+hip.y)/2}, st('torsoLean'));
+    if (ev.balance) text('balance '+(ev.balance.v*100).toFixed(0)+'%', {x:am.x+r*3,y:am.y-r*2}, st('balance'));
+  } else {
+    seg(P(11),P(12), st('shoulderTilt'), [], lw*1.8);
+    seg(P(23),P(24), st('hipTilt'), [], lw*1.8);
+    seg(P(7),P(8), st('headTilt'), [], lw*1.8);
+    seg(P(27),P(28), st('stance'), [6,6], lw*1.6);
+    [11,12].forEach(i=>dot(P(i),st('shoulderTilt')));
+    [23,24].forEach(i=>dot(P(i),st('hipTilt')));
+    [7,8].forEach(i=>dot(P(i),st('headTilt')));
+    [27,28].forEach(i=>dot(P(i),st('stance')));
+    dot(P(bow.e),st('bowElbow')); dot(P(bow.w),'#38bdf8');
+    dot(P(drw.e),st('elbowRise')); dot(P(drw.w),'#38bdf8');
+    if (ev.shoulderTilt) text(ev.shoulderTilt.v.toFixed(1)+'°', {x:Math.max(P(11).x,P(12).x)+r*2,y:sh.y}, st('shoulderTilt'));
+    if (ev.hipTilt) text(ev.hipTilt.v.toFixed(1)+'°', {x:Math.max(P(23).x,P(24).x)+r*2,y:hip.y}, st('hipTilt'));
+    if (ev.bowElbow) text(ev.bowElbow.v.toFixed(0)+'°', {x:P(bow.e).x+r*2,y:P(bow.e).y}, st('bowElbow'));
+  }
+}
+
+/* =====================================================
+   COMBINED COACH REPORT  (form  ×  target results)
+   ===================================================== */
+let FORM = null;       // {ev, extra, title, shotLines, video}
+let formNote = '';
+
+function renderReport(ev, extra=[], title='Analysis', shotLines=[]){
+  FORM = {ev, extra, title, shotLines, video: mediaKind==='video'};
+  formNote = '';
+  renderCoach();
+}
+function setFormNote(msg){ FORM = null; formNote = msg; renderCoach(); }
+
+// which form checks are commonly linked to each result pattern
+const CAUSES = {
+  side:{keys:['bowElbow','shoulderTilt','headTilt','headOver','elbowOff','elbowRise','wristStraight','hookVar','holdStill','releasePath'],
+    why:'Sideways shifts usually come from the bow shoulder and bow-arm position, torque in the bow hand or hook, the draw elbow drifting off the arrow line, or the direction of the release.',
+    hidden:'grip torque, string alignment, the direction of the release, wind, or sight windage'},
+  low:{keys:['expMove','drawLenCV','bowElbow','bowFollow','anchor','arrowTilt','releasePath'],
+    why:'Low arrows usually come from a draw length that collapses or varies, a bow arm that bends or drops at the release, or an anchor that is low or not repeatable.',
+    hidden:'plucking the string, a short or inconsistent draw length, or sight elevation'},
+  high:{keys:['torsoLean','anchor','arrowTilt','elbowOff','headOver'],
+    why:'High arrows usually come from leaning back, an anchor that is high or inconsistent, or the draw hand and elbow sitting off the arrow line.',
+    hidden:'a high anchor, over-drawing, release timing, or sight elevation'},
+  spread:{keys:['anchor','drawLenCV','holdStill','elbowStill','hookVar','releasePath','balance','expMove','bowElbow'],
+    why:'A wide group is mostly a consistency problem: anchor, draw length, hold steadiness, hook shape and release path all need to repeat on every shot.',
+    hidden:'fatigue, focus or shot routine, equipment tuning, or wind'}
+};
+const causeOf = i => i.id==='h' ? CAUSES.side : i.id==='v' ? CAUSES[i.dir] : CAUSES.spread;
+const issueName = i => i.id==='h' ? 'sideways shift' : i.id==='v' ? `${i.dir} shift` : 'wide grouping';
+
+const isFlag = e => e && (e.s==='warn' || e.s==='bad');
+const sev = e => e.s==='bad' ? 2 : 1;
+const linked = keys => FORM ? keys.filter(k => isFlag(FORM.ev[k])).sort((a,b) => sev(FORM.ev[b])-sev(FORM.ev[a])) : [];
+const fmtV = k => { const d=DEFS[k], e=FORM.ev[k]; return `${d.label.toLowerCase()} (${e.v.toFixed(d.dec)}${d.unit})`; };
+
+function formScore(){
+  if(!FORM) return null;
+  const judged = Object.entries(FORM.ev).filter(([k,e]) => e.s!=='info');
+  if(!judged.length) return null;
+  let pts=0; judged.forEach(([k,e]) => pts += e.s==='good'?1:e.s==='warn'?.5:0);
+  return {pct:Math.round(100*pts/judged.length), flagged:judged.filter(([k,e])=>e.s!=='good').sort((a,b)=>sev(b[1])-sev(a[1])).map(([k])=>k)};
+}
+
+function targetStats(){
+  if(!radius() || !T.shots.length) return null;
+  const sc=T.shots.map(scoreOf), total=sc.reduce((a,b)=>a+b,0), n=sc.length;
+  const faceCm=+$('face').value||122, distM=+$('dist').value||0, cm=(faceCm/2)/radius();
+  const R={n, sc, total, max:n*nRings(), avg:total/n, faceCm, distM, cm};
+  if(n>=3){
+    const g=groupStats(), k=g.w*cm;
+    R.g=g; R.dxCm=g.dx*k; R.dyCm=g.dy*k; R.spreadCm=g.spread*k;
+    R.mrad = distM ? Math.hypot(R.dxCm,R.dyCm)*10/distM : null;
+  }
+  return R;
+}
+function resultIssues(R){
+  const out=[]; if(!R||!R.g) return out;
+  if(Math.abs(R.g.dx)>0.4) out.push({id:'h', dir:R.g.dx<0?'left':'right', cm:Math.abs(R.dxCm)});
+  if(Math.abs(R.g.dy)>0.4) out.push({id:'v', dir:R.g.dy<0?'high':'low', cm:Math.abs(R.dyCm)});
+  if(R.g.spread>1.2) out.push({id:'s', dir:'wide', cm:R.spreadCm});
+  return out;
+}
+
+function itemHTML(k){
+  const d=DEFS[k], {v,s}=FORM.ev[k], val=v.toFixed(d.dec)+d.unit;
+  let small;
+  if (s==='good') small='In a good range.';
+  else if (s==='info') small='Shown for reference only. There is no validated range for this value.';
+  else small = (v<d.good[0] ? (d.low||d.high) : (d.high||d.low)) || '';
+  return `<div class="item ${s}"><span class="ic">${ICON[s]}</span><div><b>${d.label}</b>: ${val}<small>${small}</small></div></div>`;
+}
+
+function overviewText(R, issues, fs){
+  let a;
+  if(fs){
+    const top = fs.flagged.slice(0,2).map(k => DEFS[k].label.toLowerCase());
+    a = `Your form scores ${fs.pct}/100` + (top.length ? `, with ${list(top)} needing the most work` : ', with no major faults flagged');
+  } else a = 'There is no posture data yet';
+  let b;
+  if(R){
+    b = `you scored ${R.total}/${R.max} (${R.avg.toFixed(1)} per arrow${R.distM?` at ${R.distM} m`:''})`;
+    if(R.g){
+      const dirs = issues.filter(i=>i.id!=='s').map(i=>`${i.cm.toFixed(0)} cm ${i.dir}`);
+      b += dirs.length ? `, with the group centred about ${list(dirs)} of the middle` : ', with the group well centred';
+      b += R.g.spread<=1.2 ? ' and tight' : R.g.spread<=2.2 ? ' and moderately spread' : ' and widely spread';
+    }
+  } else b = 'no target results have been added yet';
+  let t = `${a}; ${b}.`;
+  if(fs && R && R.g){
+    if(issues.length){
+      const lk=[]; issues.forEach(i => linked(causeOf(i).keys).forEach(k => { if(!lk.includes(k)) lk.push(k); }));
+      t += lk.length
+        ? ` The pattern fits with ${list(lk.slice(0,3).map(k=>DEFS[k].label.toLowerCase()))} in your form.`
+        : ` None of the measured posture checks explains the pattern, so look at what a camera can't show (grip, string alignment, release) or at the sight.`;
+    } else t += ' Form and results are consistent with each other.';
+  }
+  return t;
+}
+
+function renderCoach(){
+  const el = $('report');
+  const R = targetStats(), issues = resultIssues(R), fs = formScore();
+  if(!FORM && !R){ el.innerHTML = `<p class="mut">${formNote || 'Add an archer photo/video and a target photo to get a combined analysis of your form and your results.'}</p>`; return; }
+
+  const dTxt = R && R.distM ? ` at ${R.distM} m` : '';
+  let html = `<h3>Coach summary</h3>`;
+  html += `<div class="chips">`
+    + (fs ? `<span class="chip" style="border-color:${fs.pct>=75?COL.good:fs.pct>=45?COL.warn:COL.bad}">Form ${fs.pct}/100</span>` : '')
+    + (R ? `<span class="chip">Score ${R.total}/${R.max}</span>` : '')
+    + (R && R.g ? `<span class="chip">Group ${R.spreadCm.toFixed(0)} cm</span>` : '')
+    + `</div>`;
+  html += `<p class="lead">${overviewText(R, issues, fs)}</p>`;
+  if(FORM) html += `<p class="mut">Form source: ${FORM.title}</p>`;
+  else if(formNote) html += `<p class="mut">${formNote}</p>`;
+
+  /* ---- form x results ---- */
+  html += `<div class="sec"><h3>Form × results</h3>`;
+  if(!R){
+    html += `<p class="mut">Add the target photo, click the centre and edge, then each arrow. The app then explains where your arrows went and why.</p>`;
+  } else if(!R.g){
+    html += `<p class="mut">Add at least 3 arrows to get a group analysis.</p>`;
+  } else {
+    if(!issues.length) html += `<div class="item good"><span class="ic">✔</span><div>The group is well centred and tight${dTxt}. ${fs&&fs.flagged.length?'Keep an eye on the flagged form points below; they are not hurting this group yet.':''}</div></div>`;
+    issues.forEach(i => {
+      const c = causeOf(i), lk = fs ? linked(c.keys) : [];
+      const head = i.id==='s'
+        ? `The group is <b>wide</b> (average ${R.spreadCm.toFixed(0)} cm from the group centre${dTxt}).`
+        : `Arrows are grouping <b>${i.dir}</b> (about ${i.cm.toFixed(0)} cm${dTxt}).`;
+      let body;
+      if(!fs) body = `${c.why} Add a posture photo or video to see which of these applies to you.`;
+      else if(lk.length) body = `This is likely linked to your form: ${list(lk.map(k=>`<b>${fmtV(k)}</b>`))}. ${c.why}`;
+      else body = `No measured posture check is flagged for this pattern${fs.pct>=75?', and your measured form is strong':''}. Look at what a camera can't show: ${c.hidden}.`;
+      html += `<div class="item ${lk.length?'warn':'info'}"><span class="ic">${lk.length?'!':'i'}</span><div>${head} ${body}</div></div>`;
+    });
+    const off = issues.filter(i=>i.id!=='s');
+    if(off.length && R.distM){
+      html += `<div class="item info"><span class="ic">i</span><div><b>Sight vs form</b>: the group is about ${Math.hypot(R.dxCm,R.dyCm).toFixed(0)} cm off centre${dTxt} (about ${R.mrad.toFixed(1)} mrad). `
+        + (R.g.spread<=1.6 ? 'Because the group is fairly tight, a small sight change toward the arrows is reasonable. Change in small steps and re-shoot.'
+                           : 'The group is still wide, so fix consistency before chasing the sight; sight changes will not hold up.')
+        + `</div></div>`;
+    }
+  }
+  html += `</div>`;
+
+  /* ---- priorities ---- */
+  if(fs){
+    const lkAll = new Map();
+    issues.forEach(i => linked(causeOf(i).keys).forEach(k => lkAll.set(k,(lkAll.get(k)||0)+1)));
+    const order = [...fs.flagged].sort((a,b) => ((lkAll.get(b)||0)-(lkAll.get(a)||0)) || (sev(FORM.ev[b])-sev(FORM.ev[a]))).slice(0,5);
+    html += `<div class="sec"><h3>Fix first</h3>`;
+    html += order.length ? order.map(k => itemHTML(k).replace('</small></div></div>', `${lkAll.get(k)?' <b>(linked to your results)</b>':''}</small></div></div>`)).join('') : `<p class="mut">Nothing flagged. 🎯</p>`;
+    html += FORM.extra.map(t => `<div class="item warn"><span class="ic">!</span><div>${t}</div></div>`).join('');
+    html += `</div>`;
+  }
+  if(FORM && FORM.shotLines.length) html += `<div class="sec"><h3>Shots found in the video</h3><p class="mut">${FORM.shotLines.join('<br>')}<br>Times are approximate (the video is sampled several times per second).</p></div>`;
+
+  /* ---- breakdown by area ---- */
+  if(FORM){
+    html += `<div class="sec"><h3>Breakdown by area</h3>`;
+    AREAS.forEach(a => {
+      const items = a.keys.filter(k => FORM.ev[k]).map(itemHTML);
+      const body = items.length ? items.join('') : `<p class="mut">${a.need || 'Nothing measurable in this camera view.'}</p>`;
+      const hit = issues.filter(i => causeOf(i).keys.some(k => a.keys.includes(k) && isFlag(FORM.ev[k]))).map(issueName);
+      const lnk = hit.length ? `<p class="link">Likely contributing to your ${list([...new Set(hit)])}.</p>` : '';
+      html += `<div style="margin-top:12px"><h3 style="font-size:15px">${a.t}${a.kim?` <span class="mut">· ${a.kim}</span>`:''}</h3>${body}${lnk}<p class="mut not">Not judged by this tool: ${a.not}</p></div>`;
+    });
+    html += `</div>`;
+  }
+
+  html += `<p class="mut" style="margin-top:14px">All ranges are provisional general-purpose values, not taken from Coach Kim. The form–result links are common coaching patterns, not proof: they are only as good as the video angle. Confirm with a coach.</p>`;
+  el.innerHTML = html;
+}
+
+/* ---------------- media loading ---------------- */
+const vid = $('v');
+let mediaKind = null, imgEl = null, lastLms = null, playing = false, scanning = false;
+
+$('file').onchange = e => {
+  const f = e.target.files[0]; if(!f) return;
+  const url = URL.createObjectURL(f);
+  $('seek').style.display='none'; $('prog').style.display='none'; $('tl').style.display='none'; $('tlnote').style.display='none';
+  if (f.type.startsWith('video')){
+    mediaKind='video'; vid.src=url; vid.load();
+    vid.onloadeddata = async () => {
+      cv.width=vid.videoWidth; cv.height=vid.videoHeight;
+      $('scan').disabled=false; $('play').disabled=false; $('dl').disabled=false;
+      $('seek').style.display='block'; $('seek').value=0;
+      vid.currentTime=0; await seeked(); renderFrame(true);
+    };
+  } else {
+    mediaKind='image'; imgEl=new Image();
+    imgEl.onload = () => { cv.width=imgEl.naturalWidth; cv.height=imgEl.naturalHeight;
+      $('scan').disabled=true; $('play').disabled=true; $('dl').disabled=false; renderFrame(true); };
+    imgEl.src=url;
+  }
+};
+$('bow').onchange = $('view').onchange = $('closeup').onchange = () => { if(mediaKind && !scanning) renderFrame(true); };
+
+const seeked = () => new Promise(r => { vid.onseeked = () => r(); });
+const source = () => mediaKind==='video' ? vid : imgEl;
+
+function detect(){
+  if(!landmarker) return null;
+  try{ const r = landmarker.detect(source()); return r.landmarks && r.landmarks[0] ? r.landmarks[0] : null; }
+  catch(e){ return null; }
+}
+
+function renderFrame(updateReport){
+  ctx.drawImage(source(),0,0,cv.width,cv.height);
+  const L = detect(); lastLms = L;
+  const hd = getHand(L);
+  if(!L){
+    if(hd){
+      drawHand(hd.L,{},null);
+      if(updateReport) renderReport(evaluate(hd.vals),[],'Hand close-up (forearm and elbow not visible, so wrist straightness is not measured)');
+      return null;
+    }
+    if(updateReport) setFormNote('No person detected in the posture file. Use a clearer, full-body shot (or tick "Close-up" for a hand close-up).');
+    return null;
+  }
+  const vals = compute(L,cv.width,cv.height);
+  if(hd) Object.assign(vals, hd.vals);
+  const ev = evaluate(vals);
+  drawOverlay(L,ev);
+  if(hd) drawHand(hd.L,ev,L);
+  if(updateReport) renderReport(ev,[], mediaKind==='video'?'a single video frame':'a single photo');
+  return vals;
+}
+
+/* ---------------- video: live play ---------------- */
+$('play').onclick = () => {
+  if(playing){ vid.pause(); playing=false; $('play').textContent='Play with live overlay'; return; }
+  playing=true; $('play').textContent='Pause'; vid.play(); let n=0;
+  const loop = () => {
+    if(!playing) return;
+    if(vid.ended){ playing=false; $('play').textContent='Play with live overlay'; return; }
+    renderFrame(++n%8===0);
+    $('seek').value = (vid.currentTime/vid.duration)*1000;
+    requestAnimationFrame(loop);
+  };
+  loop();
+};
+$('seek').oninput = async e => {
+  if(playing){ vid.pause(); playing=false; $('play').textContent='Play with live overlay'; }
+  vid.currentTime = (e.target.value/1000)*vid.duration; await seeked(); renderFrame(true);
+};
+
+/* ---------------- shot timeline analysis ---------------- */
+function analyzeTimeline(S){
+  if(S.length<5) return null;
+  const raw = S.map(s => s.vals._drawDist);
+  const d = raw.map((_,i) => median(raw.slice(Math.max(0,i-1),i+2)));   // smooth
+  // robust "full draw" reference: median of the top 20% (ignores brief post-release spikes)
+  const top = [...d].sort((x,y)=>y-x).slice(0, Math.max(3, Math.round(d.length*0.2)));
+  const maxD = median(top), thr = .85*maxD;
+
+  let runs=[], cur=null;
+  d.forEach((x,i) => {
+    if(x>=thr){
+      if(cur && S[i].t-S[cur.b].t < 0.6) cur.b=i;
+      else { if(cur) runs.push(cur); cur={a:i,b:i}; }
+    }
+  });
+  if(cur) runs.push(cur);
+  // release = first sudden fast movement of the draw hand inside the run
+  runs.forEach(r => {
+    r.rb = r.b;
+    for(let j=r.a+2;j<=r.b;j++){
+      const dt = (S[j].t-S[j-1].t) || 0.1;
+      const sp = Math.hypot(S[j].vals._dwx-S[j-1].vals._dwx, S[j].vals._dwy-S[j-1].vals._dwy)/dt;
+      if(sp>0.7){ r.rb=j-1; break; }
+    }
+  });
+  runs = runs.filter(r => S[r.rb].t-S[r.a].t >= 0.4);
+  if(!runs.length) return {shots:[], vals:{}, d, maxD};
+
+  const shots = runs.map((r,idx) => {
+    const tA=S[r.a].t, tB=S[r.rb].t;
+    let i=r.a; while(i>0 && d[i-1]>0.5*maxD) i--;
+    const tS=S[i].t;
+    const hold=S.slice(r.a,r.rb+1);
+    const last=S[r.rb].vals;
+    const win=hold.filter(s => s.t>=tB-1.0);
+    const jit = f => win.length>=3 ? Math.hypot(std(win.map(s=>s.vals[f+'x'])), std(win.map(s=>s.vals[f+'y'])))*100 : null;
+    let slope=null;
+    if(win.length>=3){
+      const ts=win.map(s=>s.t), ys=win.map(s=>s.vals._drawDist), tm=mean(ts), ym=mean(ys);
+      const den=ts.reduce((a,t)=>a+(t-tm)**2,0);
+      if(den>0) slope = ts.reduce((a,t,k)=>a+(t-tm)*(ys[k]-ym),0)/den*100;
+    }
+    // draw-hand path after release vs the arrow line
+    let rel=null;
+    const after=S.filter((s,j)=> j>r.rb && s.t>tB && s.t<=tB+0.7);
+    if(after.length){
+      // direction of the FIRST clear movement after release (later frames may show the hand coming back)
+      let far=null, fd=0;
+      for(const s of after){ const dd=Math.hypot(s.vals._dwx-last._dwx, s.vals._dwy-last._dwy); if(dd>=0.08){far=s;fd=dd;break;} }
+      if(far){
+        const vx=far.vals._dwx-last._dwx, vy=far.vals._dwy-last._dwy;
+        const ux=last._dwx-last._bwx, uy=last._dwy-last._bwy;
+        const c=(vx*ux+vy*uy)/((Math.hypot(vx,vy)*Math.hypot(ux,uy))||1);
+        rel=deg(Math.acos(Math.max(-1,Math.min(1,c))));
+      }
+    }
+    // bow arm follow-through: how far the bow hand drops in the first 0.5 s after release
+    let bowDrop=null;
+    const post=S.filter((s,j)=> j>r.rb && s.t>tB && s.t<=tB+0.5);
+    if(post.length) bowDrop=(post[post.length-1].vals._bwy-last._bwy)*100;
+
+    return {n:idx+1, tS, tA, tB, hold:tB-tA, total:tB-tS, full:median(d.slice(r.a,r.rb+1)),
+            bowStill:jit('_bw'), elbowStill:jit('_de'), slope, rel, bowDrop};
+  });
+
+  const vals = {
+    holdStill:medOrNull(shots.map(s=>s.bowStill)),
+    elbowStill:medOrNull(shots.map(s=>s.elbowStill)),
+    expMove:medOrNull(shots.map(s=>s.slope)),
+    releasePath:medOrNull(shots.map(s=>s.rel)),
+    bowFollow:medOrNull(shots.map(s=>s.bowDrop))
+  };
+  if(shots.length>=2){ const f=shots.map(s=>s.full); vals.drawLenCV = std(f)/mean(f)*100; }
+  return {shots, vals, d, maxD};
+}
+
+function drawTimeline(S, TL, dur){
+  const c=$('tl'), g=c.getContext('2d'), W=c.width, H=c.height, m={l:46,r:14,t:14,b:30};
+  const X = t => m.l+(W-m.l-m.r)*t/dur, Y = v => H-m.b-(H-m.t-m.b)*v;
+  g.clearRect(0,0,W,H); g.fillStyle='#0f1419'; g.fillRect(0,0,W,H);
+  g.font='12px system-ui,sans-serif'; g.fillStyle='#8b98a8'; g.strokeStyle='#2a3441'; g.lineWidth=1;
+  [0,.5,1].forEach(v => { g.beginPath(); g.moveTo(m.l,Y(v)); g.lineTo(W-m.r,Y(v)); g.stroke(); g.fillText(Math.round(v*100)+'%',6,Y(v)+4); });
+  const step = dur>60?10:dur>20?5:dur>8?2:1;
+  for(let t=0;t<=dur;t+=step) g.fillText(t+'s',X(t)-8,H-10);
+  TL.shots.forEach(s => {
+    g.fillStyle='rgba(52,211,153,.2)'; g.fillRect(X(s.tA),m.t,Math.max(2,X(s.tB)-X(s.tA)),H-m.t-m.b);
+    g.strokeStyle='#f87171'; g.lineWidth=2; g.beginPath(); g.moveTo(X(s.tB),m.t); g.lineTo(X(s.tB),H-m.b); g.stroke();
+    g.fillStyle='#e6edf3'; g.fillText('Shot '+s.n, X(s.tA)+3, m.t+12);
+  });
+  g.strokeStyle='#38bdf8'; g.lineWidth=2; g.beginPath();
+  S.forEach((s,i) => { const x=X(s.t), y=Y(Math.min(1.05,TL.d[i]/TL.maxD)); i?g.lineTo(x,y):g.moveTo(x,y); });
+  g.stroke();
+}
+$('tl').onclick = async e => {
+  if(mediaKind!=='video' || !vid.duration) return;
+  const c=$('tl'), r=c.getBoundingClientRect(), x=(e.clientX-r.left)*c.width/r.width;
+  const t=Math.max(0,Math.min(vid.duration,(x-46)/(c.width-46-14)*vid.duration));
+  if(playing){ vid.pause(); playing=false; $('play').textContent='Play with live overlay'; }
+  vid.currentTime=t; await seeked(); renderFrame(false);
+  $('seek').value=(t/vid.duration)*1000;
+};
+
+/* ---------------- video: full analysis ---------------- */
+$('scan').onclick = async () => {
+  if(!landmarker || scanning) return;
+  playing=false; vid.pause(); scanning=true; $('scan').disabled=true;
+  const step = Math.max(0.1, vid.duration/200), samples=[];
+  $('prog').style.display='block'; $('prog').max=vid.duration;
+  for(let t=0;t<vid.duration;t+=step){
+    vid.currentTime=t; await seeked();
+    ctx.drawImage(vid,0,0,cv.width,cv.height);
+    const L=detect();
+    if(L) samples.push({t, vals:compute(L,cv.width,cv.height), L, hd:getHand(L)});
+    $('prog').value=t;
+  }
+  $('prog').style.display='none'; scanning=false; $('scan').disabled=false;
+  if(samples.length<2){ setFormNote('Could not track the archer in this video. For a hand close-up video, use Play or the slider instead; the whole-video analysis needs the full body in view.'); return; }
+
+  const maxD = Math.max(...samples.map(s=>s.vals._drawDist));
+  let draw = samples.filter(s=>s.vals._drawDist >= .9*maxD);
+  if(draw.length<1) draw=[samples.reduce((a,b)=>a.vals._drawDist>b.vals._drawDist?a:b)];
+  const agg={};
+  for(const k of POSE_KEYS) agg[k]=median(draw.map(s=>s.vals[k]));
+
+  const hands = draw.filter(s=>s.hd);
+  if(hands.length){
+    agg.fingerCurl = median(hands.map(s=>s.hd.vals.fingerCurl));
+    const ws = clean(hands.map(s=>s.hd.vals.wristStraight));
+    if(ws.length){ agg.wristStraight = median(ws); if(ws.length>=3) agg.hookVar = std(ws); }
+  }
+
+  const TL = analyzeTimeline(samples);
+  let shotLines=[];
+  if(TL){
+    Object.assign(agg, TL.vals);
+    shotLines = TL.shots.map(s => `Shot ${s.n}: about ${s.total.toFixed(1)} s from the start of the draw to release (full-draw hold about ${s.hold.toFixed(1)} s)`);
+    drawTimeline(samples, TL, vid.duration);
+    $('tl').style.display='block'; $('tlnote').style.display='block';
+  }
+  const ev = evaluate(agg);
+
+  const extra=[];
+  if(draw.length>=3){
+    const sd = k => std(draw.map(s=>s.vals[k]));
+    if($('view').value==='side'){
+      if(sd('anchor')>0.06) extra.push('<b>Inconsistent anchor</b> across full-draw frames. Work on landing the same anchor point every shot.');
+      if(sd('elbowOff')>0.06) extra.push('<b>Draw elbow position drifts</b> during the hold. Focus on steady back tension.');
+    }
+    if(sd('bowElbow')>6) extra.push('<b>Bow arm is not stable</b> during the hold (angle varies a lot).');
+  }
+  if($('closeup').checked && !hands.length) extra.push('<b>Hook not checked</b>: no hand was found in the full-draw frames. The hook needs a close-up of the draw hand.');
+
+  const best = draw.reduce((a,b)=>a.vals._drawDist>b.vals._drawDist?a:b);
+  vid.currentTime=best.t; await seeked();
+  ctx.drawImage(vid,0,0,cv.width,cv.height);
+  const bv = Object.assign({}, best.vals, best.hd ? best.hd.vals : {});
+  const bev = evaluate(bv);
+  drawOverlay(best.L, bev);
+  if(best.hd) drawHand(best.hd.L, bev, best.L);
+  $('seek').value=(best.t/vid.duration)*1000;
+  renderReport(ev, extra, `whole-video analysis (${draw.length} full-draw frames of ${samples.length})`, shotLines);
+};
+
+$('dl').onclick = () => { const a=document.createElement('a'); a.download='archery-form.png'; a.href=cv.toDataURL('image/png'); a.click(); };
+
+/* =====================================================
+   TARGET (small canvas, same page)
+   ===================================================== */
+const tc = $('tc'), tx = tc.getContext('2d');
+const T = {img:null, center:null, edge:null, shots:[]};
+
+$('tfile').onchange = e => {
+  const f=e.target.files[0]; if(!f) return;
+  const img=new Image();
+  img.onload=()=>{ T.img=img; T.center=T.edge=null; T.shots=[]; tc.width=img.naturalWidth; tc.height=img.naturalHeight; tdraw(); thint(); treport(); };
+  img.src=URL.createObjectURL(f);
+};
+const thint = () => {
+  $('thint').textContent = !T.img ? 'Upload a photo of the target (as straight-on as possible, seen from the shooting line).'
+    : !T.center ? 'Step 1: click the exact CENTER of the target (the X / gold centre).'
+    : !T.edge ? 'Step 2: click the OUTER EDGE of the scoring area (outermost ring, any direction).'
+    : 'Step 3: click each arrow hole. Use "Enlarge" for precise clicks.';
+};
+$('rings').oninput = $('dist').oninput = $('face').oninput = () => { tdraw(); treport(); };
+$('undo').onclick = () => { if(T.shots.length) T.shots.pop(); else if(T.edge) T.edge=null; else T.center=null; tdraw(); thint(); treport(); };
+$('reset').onclick = () => { T.center=T.edge=null; T.shots=[]; tdraw(); thint(); treport(); };
+$('tzoom').onclick = () => { const b=$('tleft').classList.toggle('big'); $('tzoom').textContent = b ? 'Shrink' : 'Enlarge'; };
+tc.onclick = e => {
+  if(!T.img) return;
+  const r=tc.getBoundingClientRect(), p={x:(e.clientX-r.left)*tc.width/r.width, y:(e.clientY-r.top)*tc.height/r.height};
+  if(!T.center) T.center=p; else if(!T.edge) T.edge=p; else T.shots.push(p);
+  tdraw(); thint(); treport();
+};
+const nRings = () => Math.max(3, +$('rings').value||10);
+const radius = () => T.center&&T.edge ? dist(T.center,T.edge) : 0;
+const scoreOf = p => { const R=radius(), n=nRings(); const d=dist(p,T.center); return d>=R ? 0 : n-Math.floor(d/(R/n)); };
+
+function tdraw(){
+  tx.clearRect(0,0,tc.width,tc.height);
+  if(!T.img) return;
+  tx.drawImage(T.img,0,0);
+  const s=Math.max(1,tc.width/800)*1.6;   // markers sized for the small display
+  if(T.center){ tx.strokeStyle='#38bdf8'; tx.lineWidth=2*s; const c=T.center;
+    tx.beginPath(); tx.moveTo(c.x-12*s,c.y); tx.lineTo(c.x+12*s,c.y); tx.moveTo(c.x,c.y-12*s); tx.lineTo(c.x,c.y+12*s); tx.stroke(); }
+  if(T.center && T.edge){
+    const R=radius(), n=nRings(); tx.strokeStyle='rgba(56,189,248,.6)'; tx.lineWidth=1.5*s;
+    for(let i=1;i<=n;i++){ tx.beginPath(); tx.arc(T.center.x,T.center.y,R*i/n,0,7); tx.stroke(); }
+  }
+  T.shots.forEach(p=>{
+    tx.beginPath(); tx.arc(p.x,p.y,6*s,0,7); tx.fillStyle='#f87171'; tx.fill(); tx.strokeStyle='#fff'; tx.lineWidth=2*s; tx.stroke();
+    tx.font=`700 ${14*s}px system-ui`; tx.fillStyle='#fff'; tx.strokeStyle='#000'; tx.lineWidth=3*s;
+    const t=String(scoreOf(p)); tx.strokeText(t,p.x+9*s,p.y-9*s); tx.fillText(t,p.x+9*s,p.y-9*s);
+  });
+  if(T.shots.length>1 && radius()){
+    const g = groupStats();
+    tx.strokeStyle='#fbbf24'; tx.lineWidth=2.5*s; tx.setLineDash([8*s,6*s]);
+    tx.beginPath(); tx.arc(g.c.x,g.c.y,Math.max(g.spread*g.w,6*s),0,7); tx.stroke(); tx.setLineDash([]);
+    tx.beginPath(); tx.moveTo(g.c.x-10*s,g.c.y); tx.lineTo(g.c.x+10*s,g.c.y); tx.moveTo(g.c.x,g.c.y-10*s); tx.lineTo(g.c.x,g.c.y+10*s); tx.stroke();
+    tx.setLineDash([4*s,6*s]); tx.beginPath(); tx.moveTo(T.center.x,T.center.y); tx.lineTo(g.c.x,g.c.y); tx.stroke(); tx.setLineDash([]);
+  }
+}
+function groupStats(){
+  const n=T.shots.length, w=radius()/nRings();
+  const c={x:T.shots.reduce((a,p)=>a+p.x,0)/n, y:T.shots.reduce((a,p)=>a+p.y,0)/n};
+  const spread = T.shots.reduce((a,p)=>a+dist(p,c),0)/n/w;
+  const sx = Math.sqrt(T.shots.reduce((a,p)=>a+(p.x-c.x)**2,0)/n)/w;
+  const sy = Math.sqrt(T.shots.reduce((a,p)=>a+(p.y-c.y)**2,0)/n)/w;
+  return {c, w, spread, sx, sy, dx:(c.x-T.center.x)/w, dy:(c.y-T.center.y)/w};
+}
+function treport(){
+  const el=$('treport');
+  if(!T.img) el.innerHTML='<p class="mut">Calibrate the target, then click each arrow hole.</p>';
+  else if(!radius()) el.innerHTML='<p class="mut">Calibrate the target (steps above).</p>';
+  else if(!T.shots.length) el.innerHTML='<p class="mut">Calibrated ✔. Now click each arrow hole.</p>';
+  else {
+    const sc=T.shots.map(scoreOf), total=sc.reduce((a,b)=>a+b,0);
+    el.innerHTML=`<div class="score" style="font-size:26px">${total}<span class="mut"> / ${sc.length*nRings()}</span></div>
+      <p class="mut">Arrows: ${sc.join(' · ')} · average ${(total/sc.length).toFixed(1)}. Full explanation on the right.</p>`;
+  }
+  renderCoach();
+}
+$('tdl').onclick = () => { const a=document.createElement('a'); a.download='target-analysis.png'; a.href=tc.toDataURL('image/png'); a.click(); };
+</script>
+</body>
+</html>
